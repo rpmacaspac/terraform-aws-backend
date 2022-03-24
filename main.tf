@@ -58,30 +58,76 @@ resource "aws_dynamodb_table" "tf_backend_state_lock_table" {
 
 resource "aws_s3_bucket" "tf_backend_bucket" {
   bucket = var.backend_bucket
-  acl    = "private"
-  versioning {
-    enabled = true
-  }
-  logging {
-    target_bucket = aws_s3_bucket.tf_backend_logs_bucket.id
-    target_prefix = "log/"
-  }
+ 
   tags = {
     Description        = "Terraform S3 Backend bucket which stores the terraform state for account ${data.aws_caller_identity.current.account_id}."
     ManagedByTerraform = "true"
     TerraformModule    = "terraform-aws-backend"
   }
-  server_side_encryption_configuration {
-    rule {
-      apply_server_side_encryption_by_default {
-        kms_master_key_id = var.kms_key_id
-        sse_algorithm     = var.kms_key_id == "" ? "AES256" : "aws:kms"
-      }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_kms_key" "tf_backend_key" {
+  description             = "This key is used to encrypt bucket objects"
+  deletion_window_in_days = 10
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "tf_backend_sse" {
+  bucket = aws_s3_bucket.tf_backend_bucket.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      kms_master_key_id = aws_kms_key.tf_backend_key.arn
+      sse_algorithm     = "aws:kms"
     }
+  }
+}
+
+resource "aws_s3_bucket_versioning" "tf_backend_versioning" {
+  bucket = aws_s3_bucket.tf_backend_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_acl" "tf_backend_acl" {
+  bucket = aws_s3_bucket.tf_backend_bucket.id
+  acl    = "private"
+}
+
+resource "aws_s3_bucket_logging" "tf_backend_logging" {
+  bucket = aws_s3_bucket.tf_backend_bucket.id
+
+  target_bucket = aws_s3_bucket.tf_backend_bucket_logs
+  target_prefix = "log/"
+}
+
+resource "aws_s3_bucket" "tf_backend_bucket_logs" {
+  bucket = "${var.backend_bucket}-logs"
+
+  tags = {
+    Purpose            = "Logging bucket for ${var.backend_bucket}"
+    ManagedByTerraform = "true"
+    TerraformModule    = "terraform-aws-backend"
   }
   lifecycle {
     prevent_destroy = true
   }
+}
+
+resource "aws_s3_bucket_versioning" "tf_backend_logs_versioning" {
+  bucket = aws_s3_bucket.tf_backend_bucket_logs.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_acl" "tf_backend_logs_acl" {
+  bucket = aws_s3_bucket.tf_backend_bucket_logs.id
+  acl    = "log-delivery-write"
 }
 
 data "aws_iam_policy_document" "tf_backend_bucket_policy" {
@@ -135,19 +181,4 @@ resource "aws_s3_bucket_policy" "tf_backend_bucket_policy" {
   policy = data.aws_iam_policy_document.tf_backend_bucket_policy.json
 }
 
-resource "aws_s3_bucket" "tf_backend_logs_bucket" {
-  bucket = "${var.backend_bucket}-logs"
-  acl    = "log-delivery-write"
-  versioning {
-    enabled = true
-  }
-  tags = {
-    Purpose            = "Logging bucket for ${var.backend_bucket}"
-    ManagedByTerraform = "true"
-    TerraformModule    = "terraform-aws-backend"
-  }
-  lifecycle {
-    prevent_destroy = true
-  }
-}
 
